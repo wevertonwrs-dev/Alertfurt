@@ -1,0 +1,56 @@
+# Modelo inicial: requer projeto iOS e credenciais antes de executar.
+# Não há gatilho automático nem publicação na App Store.
+workflows:
+  ios-testflight:
+    name: AlertFurt iOS - TestFlight
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    integrations:
+      app_store_connect: alertfurt-apple
+    environment:
+      xcode: latest
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: br.com.alertfurt.ios
+      vars:
+        XCODE_PROJECT: ios/AlertFurt.xcodeproj
+        XCODE_SCHEME: AlertFurt
+    scripts:
+      - name: Check project prerequisites
+        script: |
+          set -eu
+          test -d "$CM_BUILD_DIR/$XCODE_PROJECT"
+          test -d "$CM_BUILD_DIR/ios/AlertFurtTests"
+      - name: Run simulator tests
+        script: |
+          set -eu
+          DEVICE_ID=$(python3 - <<'PY'
+          import json, subprocess
+          data = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"]))
+          phones = [d for runtime, devices in data["devices"].items() if "iOS" in runtime for d in devices if d.get("isAvailable") and d["name"].startswith("iPhone")]
+          if not phones:
+              raise SystemExit("No available iPhone simulator")
+          print(phones[0]["udid"])
+          PY
+          )
+          xcodebuild test -project "$CM_BUILD_DIR/$XCODE_PROJECT" -scheme "$XCODE_SCHEME" -destination "platform=iOS Simulator,id=$DEVICE_ID" -resultBundlePath "$CM_BUILD_DIR/TestResults.xcresult" CODE_SIGNING_ALLOWED=NO
+      - name: Configure signing
+        script: xcode-project use-profiles
+      - name: Set unique build number
+        script: |
+          set -eu
+          cd "$CM_BUILD_DIR/ios"
+          agvtool new-version -all "$(date -u +%Y%m%d%H%M)"
+      - name: Build signed IPA
+        script: |
+          xcode-project build-ipa --project "$CM_BUILD_DIR/$XCODE_PROJECT" --scheme "$XCODE_SCHEME"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+      - TestResults.xcresult
+    publishing:
+      app_store_connect:
+        auth: integration
+        # Upload to App Store Connect; assign to the internal tester group there.
+        submit_to_testflight: false
+        submit_to_app_store: false
